@@ -78,7 +78,7 @@ def sample_point_in_cube(block,target_value,halfie):
 
 
 
-def get_points_from_vox(q, name_list):
+def get_points_from_vox(q, name_list, scale_list):
     name_num = len(name_list)
     for idx in tqdm(range(name_num)):
         print(idx,'/',name_num)
@@ -98,8 +98,15 @@ def get_points_from_vox(q, name_list):
                 for k in range(16):
                     voxel_model_256[i*16:i*16+16,j*16:j*16+16,k*16:k*16+16] = voxel_model_b[voxel_model_bi[i,j,k]]
         #add flip&transpose to convert coord from shapenet_v1 to shapenet_v2
-        voxel_model_256 = np.flip(np.transpose(voxel_model_256, (2,1,0)),2)
-        
+        voxel_model_256_ = np.zeros([256, 256, 256], np.uint8)
+        is_, js_, ks_ = np.where(voxel_model_256)
+        scale = scale_list[idx] # replace!
+        is_ = np.round((is_ - 128)/scale + 128).astype(int)
+        js_ = np.round((js_ - 128)/scale + 128).astype(int)
+        ks_ = np.round((ks_ - 128)/scale + 128).astype(int)
+        voxel_model_256_[is_, js_, ks_] = 1 
+        voxel_model_256 = voxel_model_256_
+
         #vertices, triangles = mcubes.marching_cubes(voxel_model_256, 0.5)
         #mcubes.export_mesh(vertices, triangles, "samples/"+name_list[idx][1][-10:-4]+"_origin.dae", str(idx))
         
@@ -338,8 +345,8 @@ if __name__ == '__main__':
         target_classes_txt = sys.argv[1] 
         with open(target_classes_txt, 'r') as f:
             target_classes = [el.strip() for el in f.readlines()] 
-    voxel_mat_toplevel = '/orion/u/ianhuang/Laser/impl_ian'
-    output_dir = 'vox_preprocessing'
+    voxel_mat_toplevel = '/orion/u/ianhuang/Laser/impl_ian2'
+    output_dir = 'vox_preprocessing2'
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
     categories = os.listdir(voxel_mat_toplevel)
@@ -355,8 +362,28 @@ if __name__ == '__main__':
                 print('{} not observed in {}'.format(target_class, voxel_mat_toplevel))
     else:
         important_categories = categories
-
+    
+    
+    # Load in the scales!
+    from six.moves import cPickle
+    def unpickle_data(file_name, python2_to_3=False): 
+        in_file = open(file_name, 'rb') 
+        if python2_to_3: 
+            size = cPickle.load(in_file, encoding='latin1') 
+        else: 
+            size = cPickle.load(in_file) 
+     
+        for _ in range(size): 
+            if python2_to_3: 
+                yield cPickle.load(in_file, encoding='latin1') 
+            else: 
+                yield cPickle.load(in_file) 
+        in_file.close()     
+    scaling = next(unpickle_data('/orion/u/ianhuang/shapetalk_retraining/scaling_used_in_rendered_imgs.pkl'))
+    
     for cat in important_categories:    
+        print("{} started.".format(cat))
+        # below is the packaging.
         if not os.path.isdir(os.path.join(output_dir, cat)):
             os.makedirs(os.path.join(output_dir, cat))
         voxel_input = os.path.join(voxel_mat_toplevel, cat)
@@ -385,15 +412,27 @@ if __name__ == '__main__':
         #prepare list of names
         num_of_process = 12
         list_of_list_of_names = []
+        list_of_list_of_scalings = []
         for i in range(num_of_process):
             list_of_names = []
+            scalings_per_name = []
             for j in range(i,name_num,num_of_process):
+                scalings_per_name.append( scaling["{}/{}".format(cat, name_list[j])][0] )
                 list_of_names.append([j, os.path.join(voxel_input,name_list[j]+".mat")]) # assign the full .mat path to the ith process.
             list_of_list_of_names.append(list_of_names)  #all the assignments of .mat's to this worker.
+            list_of_list_of_scalings.append(scalings_per_name)
         
-        #map processes
+        # normalize using the minimal scale across the category...
+        min_scale = min([min(scales) for scales in list_of_list_of_scalings]) 
+        list_of_list_of_scalings = [[el/min_scale for el in list_of_scalings] for list_of_scalings in list_of_list_of_scalings]
+
         q = Queue()
-        workers = [Process(target=get_points_from_vox, args = (q, list_of_names)) for list_of_names in list_of_list_of_names]
+        
+        # below line for debugging
+        # get_points_from_vox(q, list_of_list_of_names[0], list_of_list_of_scalings[0])
+
+        #map processes
+        workers = [Process(target=get_points_from_vox, args = (q, list_of_names, list_of_scalings)) for list_of_names, list_of_scalings in zip(list_of_list_of_names, list_of_list_of_scalings)]
 
         for p in workers:
             p.start()
@@ -445,6 +484,6 @@ if __name__ == '__main__':
         
         fstatistics.close()
         hdf5_file.close()
-        print("finished")
+        print("{} finished".format(cat))
 
 
